@@ -209,14 +209,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut dec = Decoder::new();
 
-        let mut pixel_difference_pdf = VectorCountSymbolModel::new((0..=255).collect());
+       
+let mut temporal_good_pdf = VectorCountSymbolModel::new((0..=255).collect());
+let mut temporal_bad_pdf = VectorCountSymbolModel::new((0..=255).collect());
 
-        // Set up initial prior frame as uniform medium gray
-        let mut prior_frame = vec![128 as u8; (width * height) as usize];
+// Set up initial prior frame as uniform medium gray
+let mut prior_frame = vec![128 as u8; (width * height) as usize];
+let mut temporally_coherent = vec![true; (width * height) as usize];
 
-        'check_decode_loop: 
-        for frame in iter.filter_frames() {
-            if frame.frame_num < skip_count + count {
+    'check_decode_loop:
+    for frame in iter.filter_frames() {
+    if frame.frame_num < skip_count {
+        continue;
+    } else if frame.frame_num < skip_count + count {
                 if verbose {
                     print!("Checking frame: {} ... ", frame.frame_num);
                 }
@@ -226,11 +231,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Process pixels in row major order.
                 for r in 0..height {
                     for c in 0..width {
-                        let pixel_index = (r * width + c) as usize;
-                        let decoded_pixel_difference = dec.decode(&pixel_difference_pdf, &mut br).to_owned();
-                        pixel_difference_pdf.incr_count(&decoded_pixel_difference);
+                      let pixel_index = (r * width + c) as usize;
 
-                        let pixel_value = (prior_frame[pixel_index] as i32 + decoded_pixel_difference) % 256;
+let mut temp_coherent_neighbor_count = 0;
+for dr in -1..=1 as i32 {
+    for dc in -1..=1 as i32 {
+        let nr = r as i32 + dr;
+        let nc = c as i32 + dc;
+        if nr >= 0
+            && nr < height as i32
+            && nc >= 0
+            && nc < width as i32
+            && (dr != 0 || dc != 0)
+            && nr <= r as i32
+            && (nc <= c as i32 || nr < r as i32)
+        {
+            if temporally_coherent[(nr * width as i32 + nc) as usize] {
+                temp_coherent_neighbor_count += 1;
+            }
+        }
+    }
+}
+
+let decoded_pixel_difference = if temp_coherent_neighbor_count >= 3 {
+    let sym = dec.decode(&temporal_good_pdf, &mut br).to_owned();
+    temporal_good_pdf.incr_count(&sym);
+    sym
+} else {
+    let sym = dec.decode(&temporal_bad_pdf, &mut br).to_owned();
+    temporal_bad_pdf.incr_count(&sym);
+    sym
+};
+
+let pixel_value = (prior_frame[pixel_index] as i32 + decoded_pixel_difference) % 256;
 
                         if pixel_value != current_frame[pixel_index] as i32 {
                             println!(
@@ -240,6 +273,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("Abandoning check of remaining frames");
                             break 'check_decode_loop;
                         }
+                        if decoded_pixel_difference <= 25 || decoded_pixel_difference >= 256 - 25 {
+    temporally_coherent[pixel_index] = true;
+} else {
+    temporally_coherent[pixel_index] = false;
+}
                     }
                 }
                 println!("correct.");
